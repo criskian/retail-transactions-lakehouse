@@ -1,41 +1,58 @@
-"""Ingesta incremental (RF-8).
+"""Ingesta incremental: detecta datos nuevos y regenera los resultados (RF-8).
 
-Detecta archivos nuevos en `data/landing/` y dispara el pipeline completo
-(bronze → silver → gold → models). El bronze se ejecuta en modo `overwrite`,
-de modo que reprocesar todos los archivos juntos garantiza idempotencia y evita
-duplicados. Esta es la decisión de diseño explícita del documento de arquitectura:
-"Append-only en Bronze, overwrite por partición en Silver/Gold".
+Mecanismo
+---------
+* Se mantiene un manifest ``data/landing/_manifest.json`` con ``ruta -> sha256``.
+* En cada invocación se calcula el sha256 de los CSV bajo ``Transactions/`` y
+  ``Products/``; si alguno es nuevo, cambió o desapareció, se relanza el
+  pipeline completo y se actualiza el manifest.
+* Cada corrida —incluidas las **fallidas**— se registra en
+  ``data/landing/_runs.jsonl``.
 
-Mecanismo:
-- Se mantiene un manifest en `data/landing/_manifest.json` con `nombre → sha256`.
-- En cada invocación se calcula el sha256 de todos los CSV bajo
-  `data/landing/Transactions/` y `data/landing/Products/`.
-- Si alguno cambió o es nuevo, se relanza el pipeline y se actualiza el manifest.
-- Si no hay novedades, se reporta y se termina sin reprocesar.
+Decisiones
+----------
+* **Reprocesar todo** en vez de calcular deltas por partición: el dataset cabe
+  en memoria local y la consistencia entre marts y modelos queda garantizada por
+  construcción. Documentado en ``docs/ADR/0004-reprocesado-completo.md``.
+* El manifest guarda las rutas en formato POSIX. Antes usaba el separador del
+  sistema, así que un manifest generado en Windows hacía que en macOS todos los
+  ficheros pareciesen nuevos.
+* Se toma un **lock** por fichero: dos pipelines simultáneos escribiendo sobre
+  los mismos directorios dejarían el lakehouse corrupto.
 
-Comandos CLI:
-    python -m src.pipeline.ingest --check        # solo reporta qué cambió
-    python -m src.pipeline.ingest --run          # ejecuta si hay cambios
-    python -m src.pipeline.ingest --force        # ejecuta aunque no haya cambios
+CLI::
+
+    python -m src.pipeline.ingest --check
+    python -m src.pipeline.ingest --run
+    python -m src.pipeline.ingest --force [--skip-models]
 """
+
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
+import os
 import time
-from datetime import datetime
+import traceback
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
 
-from . import bronze, gold, models, silver
-from .paths import LANDING, LANDING_PRODUCTS, LANDING_TX
+from . import bronze, export_serving, gold, models, silver
+from .paths import LANDING, LANDING_PRODUCTS, LANDING_TX, MANIFEST, RUNS_LOG
 
-
-MANIFEST = LANDING / "_manifest.json"
-RUNS_LOG = LANDING / "_runs.jsonl"
+LOCK = LANDING / "_pipeline.lock"
+LOCK_STALE_SECONDS = 4 * 60 * 60
 
 
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Escaneo y manifest
+# ---------------------------------------------------------------------------
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -44,64 +61,96 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _scan() -> Dict[str, str]:
-    out: Dict[str, str] = {}
+def _scan() -> dict[str, str]:
+    out: dict[str, str] = {}
     for d in (LANDING_TX, LANDING_PRODUCTS):
         if not d.exists():
             continue
         for p in sorted(d.glob("*.csv")):
-            rel = str(p.relative_to(LANDING))
-            out[rel] = _sha256(p)
+            if p.name.startswith("."):
+                continue
+            out[p.relative_to(LANDING).as_posix()] = _sha256(p)
     return out
 
 
-def _load_manifest() -> Dict[str, str]:
+def _load_manifest() -> dict[str, str]:
     if not MANIFEST.exists():
         return {}
     try:
-        return json.loads(MANIFEST.read_text())
+        data = json.loads(MANIFEST.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+    # Compatibilidad con manifests antiguos que guardaban separadores de Windows.
+    return {k.replace("\\", "/"): v for k, v in data.items()}
 
 
-def _save_manifest(m: Dict[str, str]) -> None:
-    MANIFEST.write_text(json.dumps(m, indent=2, sort_keys=True))
+def _save_manifest(m: dict[str, str]) -> None:
+    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    MANIFEST.write_text(json.dumps(m, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def diff(current: Dict[str, str], previous: Dict[str, str]) -> Tuple[List[str], List[str], List[str]]:
-    """Devuelve (nuevos, modificados, eliminados) por nombre relativo."""
+def diff(
+    current: dict[str, str], previous: dict[str, str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Devuelve (nuevos, modificados, eliminados)."""
     new = [k for k in current if k not in previous]
     changed = [k for k in current if k in previous and current[k] != previous[k]]
     removed = [k for k in previous if k not in current]
-    return new, changed, removed
+    return sorted(new), sorted(changed), sorted(removed)
 
 
 def _log_run(payload: dict) -> None:
     RUNS_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with RUNS_LOG.open("a") as f:
+    with RUNS_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(payload) + "\n")
 
 
-def _run_pipeline(skip_models: bool = False) -> Dict[str, float]:
-    """Ejecuta el pipeline secuencial y devuelve los tiempos por etapa."""
-    timings: Dict[str, float] = {}
+# ---------------------------------------------------------------------------
+# Lock
+# ---------------------------------------------------------------------------
+@contextlib.contextmanager
+def _pipeline_lock():
+    if LOCK.exists():
+        age = time.time() - LOCK.stat().st_mtime
+        if age < LOCK_STALE_SECONDS:
+            holder = LOCK.read_text(encoding="utf-8").strip()
+            raise RuntimeError(
+                f"Ya hay un pipeline en ejecución ({holder}, hace {age / 60:.0f} min). "
+                f"Si estás seguro de que no, borra {LOCK}."
+            )
+        print(f"[ingest] lock obsoleto ({age / 3600:.1f} h); se descarta.")
+
+    LOCK.parent.mkdir(parents=True, exist_ok=True)
+    LOCK.write_text(f"pid={os.getpid()} started={_now()}", encoding="utf-8")
+    try:
+        yield
+    finally:
+        LOCK.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Ejecución
+# ---------------------------------------------------------------------------
+def _run_pipeline(*, skip_models: bool = False, export: bool = True) -> dict[str, float]:
+    timings: dict[str, float] = {}
     steps = [("bronze", bronze.run), ("silver", silver.run), ("gold", gold.run)]
     if not skip_models:
         steps.append(("models", models.run))
+    if export:
+        steps.append(("export", export_serving.run))
+
     for name, fn in steps:
         t0 = time.perf_counter()
         print(f"\n=== ingest: running {name} ===")
         fn()
-        dt = time.perf_counter() - t0
-        timings[name] = round(dt, 2)
-        print(f"=== {name} done in {dt:.1f}s ===")
+        timings[name] = round(time.perf_counter() - t0, 2)
+        print(f"=== {name} done in {timings[name]:.1f}s ===")
     return timings
 
 
 def check() -> dict:
     current = _scan()
-    previous = _load_manifest()
-    new, changed, removed = diff(current, previous)
+    new, changed, removed = diff(current, _load_manifest())
     report = {
         "files_seen": len(current),
         "new": new,
@@ -109,39 +158,69 @@ def check() -> dict:
         "removed": removed,
         "needs_run": bool(new or changed or removed),
     }
-    print(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2, ensure_ascii=False))
     return report
 
 
-def ingest(force: bool = False, skip_models: bool = False) -> dict:
+def ingest(
+    *, force: bool = False, skip_models: bool = False, export: bool = True, dry_run: bool = False
+) -> dict:
     current = _scan()
-    previous = _load_manifest()
-    new, changed, removed = diff(current, previous)
+    new, changed, removed = diff(current, _load_manifest())
+    started_at = _now()
 
-    will_run = force or new or changed or removed
-    started_at = datetime.utcnow().isoformat() + "Z"
+    if not (force or new or changed or removed):
+        print("[ingest] sin archivos nuevos ni modificados; pipeline omitido.")
+        return {
+            "started_at": started_at,
+            "ran": False,
+            "status": "skipped",
+            "new": [],
+            "changed": [],
+            "removed": [],
+        }
 
-    if not will_run:
-        msg = "[ingest] no hay archivos nuevos ni modificados; pipeline omitido."
-        print(msg)
-        return {"started_at": started_at, "ran": False, "new": [], "changed": [], "removed": []}
-
-    print(f"[ingest] cambios detectados — nuevos={new}, modificados={changed}, eliminados={removed}")
-    timings = _run_pipeline(skip_models=skip_models)
-    _save_manifest(current)
+    print(f"[ingest] cambios — nuevos={new} modificados={changed} eliminados={removed}")
+    if dry_run:
+        print("[ingest] --dry-run: no se ejecuta nada.")
+        return {
+            "started_at": started_at,
+            "ran": False,
+            "status": "dry-run",
+            "new": new,
+            "changed": changed,
+            "removed": removed,
+        }
 
     payload = {
         "started_at": started_at,
-        "finished_at": datetime.utcnow().isoformat() + "Z",
         "ran": True,
         "forced": force,
         "skip_models": skip_models,
         "new": new,
         "changed": changed,
         "removed": removed,
-        "timings_s": timings,
         "files_count": len(current),
     }
+
+    with _pipeline_lock():
+        try:
+            payload["timings_s"] = _run_pipeline(skip_models=skip_models, export=export)
+        except Exception as exc:
+            # El manifest NO se actualiza: la próxima corrida reintentará. Pero sí
+            # se deja constancia del fallo, que antes se perdía por completo.
+            payload.update(
+                status="failed",
+                finished_at=_now(),
+                error=f"{type(exc).__name__}: {exc}",
+                traceback=traceback.format_exc(limit=20),
+            )
+            _log_run(payload)
+            print(f"\n[ingest] FALLÓ: {payload['error']}")
+            raise
+
+    _save_manifest(current)
+    payload.update(status="ok", finished_at=_now())
     _log_run(payload)
     print(f"[ingest] OK — {payload['files_count']} archivos procesados")
     return payload
@@ -153,21 +232,25 @@ def _build_argparser() -> argparse.ArgumentParser:
     g.add_argument("--check", action="store_true", help="Reporta cambios sin ejecutar")
     g.add_argument("--run", action="store_true", help="Ejecuta si hay cambios")
     g.add_argument("--force", action="store_true", help="Ejecuta aunque no haya cambios")
-    parser.add_argument("--skip-models", action="store_true",
-                        help="Omite la etapa de modelos (útil para iterar rápido)")
+    parser.add_argument("--skip-models", action="store_true", help="Omite el reentrenamiento")
+    parser.add_argument("--no-export", action="store_true", help="No reconstruye serving.duckdb")
+    parser.add_argument("--dry-run", action="store_true", help="Muestra qué haría y termina")
     return parser
 
 
-def main():
+def main() -> int:
     args = _build_argparser().parse_args()
     if args.check:
         check()
-    elif args.force:
-        ingest(force=True, skip_models=args.skip_models)
-    else:
-        # Por defecto: ejecutar si hay cambios.
-        ingest(force=False, skip_models=args.skip_models)
+        return 0
+    ingest(
+        force=args.force,
+        skip_models=args.skip_models,
+        export=not args.no_export,
+        dry_run=args.dry_run,
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

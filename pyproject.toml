@@ -1,0 +1,74 @@
+[project]
+name = "retail-transactions-lakehouse"
+version = "1.0.0"
+description = "Lakehouse medallion sobre transacciones de supermercado: ETL con PySpark, segmentación y recomendación con Spark MLlib, y dashboard servido desde DuckDB."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Santiago Espinosa" },
+    { name = "Cristian Molina" },
+]
+keywords = ["pyspark", "lakehouse", "medallion", "duckdb", "streamlit", "mllib"]
+
+[project.urls]
+Repository = "https://github.com/criskian/retail-transactions-lakehouse"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["src", "src.pipeline", "app", "app.views"]
+
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "data", "docs/archive"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # isort
+    "UP",        # pyupgrade
+    "B",         # bugbear
+    "C4",        # comprehensions
+    "SIM",       # simplify
+    "RUF",
+]
+ignore = [
+    "E501",    # la longitud la controla el formateador
+    "B008",    # patrón habitual en firmas de Streamlit
+    "RUF001",  # el texto de la interfaz está en español, con acentos y comillas tipográficas
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app/streamlit_app.py" = ["E402"]  # set_page_config debe ir antes de otros imports
+"tests/*" = ["S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "app"]
+
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# `src` es un paquete namespace y el proyecto no se instala para correr los
+# tests, así que la raíz del repositorio tiene que estar en sys.path de forma
+# explícita. En local colaba por el directorio de trabajo; en CI no.
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+markers = [
+    "spark: test que necesita una SparkSession (lento; requiere JDK <= 17)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:pyspark.*",
+    "ignore::FutureWarning",
+]
+
+[tool.coverage.run]
+omit = ["tests/*", "scripts/*"]
