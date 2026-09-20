@@ -1,3 +1,8 @@
+> **Documento archivado.** Diapositivas de la propuesta de arquitectura
+> (mayo de 2026). Se conserva como registro de la propuesta inicial.
+
+---
+
 # Diapositivas — Propuesta de Arquitectura
 ## Análisis y Modelado Analítico de Transacciones de Supermercado
 **Autores:** Santiago Espinosa · Cristian Molina

@@ -1,0 +1,33 @@
+# Tema de la aplicación. Los valores de color son los mismos tokens que usa
+# app/theme.py para las gráficas: una sola paleta para toda la interfaz.
+# Las definiciones de fuente en línea requieren streamlit >= 1.50.
+
+[theme]
+base = "light"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@300..800&display=swap, system-ui, sans-serif"
+headingFont = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@300..800&display=swap, system-ui, sans-serif"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap, monospace"
+
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f3f3f0"
+textColor = "#0b0b0b"
+linkColor = "#2a78d6"
+
+baseRadius = "0.7rem"
+borderColor = "#e1e0d9"
+showWidgetBorder = true
+metricValueFontSize = "1.9rem"
+
+# Paleta categórica validada (ver app/theme.py y docs/ADR/0005).
+chartCategoricalColors = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4",
+                          "#008300", "#4a3aa7", "#e34948"]
+chartSequentialColors = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec",
+                         "#5598e7", "#3987e5", "#2a78d6", "#256abf", "#1c5cab"]
+
+[theme.sidebar]
+backgroundColor = "#f9f9f7"
+borderColor = "#e1e0d9"
+
+[browser]
+gatherUsageStats = false

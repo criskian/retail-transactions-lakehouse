@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.16.8
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONIOENCODING: utf-8
+      SPARK_DRIVER_MEMORY: 4g
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # La suite construye un lakehouse en miniatura con datos sintéticos, así
+      # que no necesita los objetos LFS ni el dataset real.
+      - name: Tests
+        run: pytest -q --cov=src --cov=app --cov-report=term-missing

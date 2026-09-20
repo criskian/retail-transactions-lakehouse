@@ -1,6 +1,20 @@
-pyspark==3.5.1
-streamlit==1.36.0
-duckdb==1.0.0
-pandas==2.2.2
-pyarrow==16.1.0
-plotly==5.22.0
+# ---------------------------------------------------------------------------
+# Capa de SERVING (dashboard). Deliberadamente SIN PySpark: el contenedor /
+# Streamlit Cloud sólo necesita leer el artefacto DuckDB ya construido.
+# Añadir pyspark aquí (317 MB + JVM) rompe el despliegue.
+#   pipeline -> requirements-pipeline.txt
+#   dev      -> requirements-dev.txt
+# ---------------------------------------------------------------------------
+streamlit==1.64.0
+duckdb==1.2.2
+pandas==2.2.3
+numpy==2.2.6
+pyarrow==19.0.1
+plotly==7.1.0
+
+# Componentes de UI (ver docs/ADR/0005-stack-de-ui.md)
+streamlit-antd-components==0.3.2
+streamlit-shadcn-ui==1.4.0
+streamlit-extras==1.6.0
+
+requests==2.32.3

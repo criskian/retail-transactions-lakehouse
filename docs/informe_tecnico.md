@@ -46,12 +46,14 @@ El dataset entregado por el curso se compone de seis archivos CSV con separador 
 | Total de unidades vendidas | **10.591.793** |
 | Número de transacciones | **1.108.986** |
 | Clientes únicos | **131.186** |
-| Productos transaccionados | **449** (de 95k en catálogo) |
-| Categorías observadas | **20** (de 50 en catálogo) |
+| Productos transaccionados | **449** (de **69.891** en el catálogo) |
+| Categorías observadas | **20** (de 50 en el catálogo) |
 | Tiendas activas | 4 (102, 103, 107, 110) |
 | Tamaño promedio de canasta | **9,55 ítems** |
 
-> Lectura: la operación es de **alto volumen y canasta pequeña pero diversa** (~10 ítems por compra). El 99,5% del catálogo de SKUs no se vendió en el semestre y el 60% de las categorías no se movió — hallazgo importante de calidad de datos / merchandising.
+> Lectura: la operación es de **alto volumen y canasta pequeña pero diversa** (~10 ítems por compra). El **99,4 %** de los SKUs del catálogo no se vendió en el semestre y el 60 % de las categorías no se movió — hallazgo importante de calidad de datos / merchandising.
+>
+> **Nota sobre el catálogo:** `ProductCategory.csv` tiene 112.010 filas, pero son *mapeos* producto→categoría, no productos: los productos distintos son **69.891**. Versiones anteriores de este informe citaban «~95.000», cifra que no corresponde a ninguna de las dos.
 
 ---
 
@@ -200,15 +202,17 @@ El cliente **336296** registra **535 transacciones** en el semestre — el resto
 
 | Día | Transacciones | Índice (Mié = 100) |
 |---|---:|---:|
-| **Domingo** | 191.406 | 140 |
+| **Domingo** | 191.406 | 139 |
 | **Sábado** | 189.015 | 138 |
-| Viernes | 158.766 | 116 |
-| Lunes | 142.445 | 104 |
+| Jueves | 158.766 | 116 |
 | Martes | 150.739 | 110 |
+| Lunes | 142.445 | 104 |
+| Viernes | 139.370 | 102 |
 | Miércoles | 137.245 | 100 |
-| Jueves | 139.370 | 102 |
 
-La operación está **fuertemente sesgada al fin de semana** (sáb + dom ~40 % más volumen que un miércoles). Día pico del semestre: **2013-06-15 (sáb)** con 9.476 transacciones. Mínimo: 2013-01-01 (martes, año nuevo) con 2.860.
+La operación está **fuertemente sesgada al fin de semana** (sáb + dom ~39 % más volumen que un miércoles). Día pico del semestre: **2013-06-15 (sáb)** con 9.476 transacciones. Mínimo: 2013-01-01 (martes, año nuevo) con 2.860.
+
+> Corrección respecto a la primera versión: jueves y viernes aparecían intercambiados. El jueves (158.766) es el tercer día más activo, no el viernes (139.370). Las cifras de esta versión se generan con `docs/regen_figures.py`.
 
 ### 3.5 Categorías
 
@@ -239,26 +243,53 @@ Lecturas clave:
 
 ### 4.1 Segmentación de clientes con K-Means
 
-**Selección de k** (silhouette sobre muestra del 10 % de clientes):
+**Selección de k.** El silhouette se promedia sobre **5 submuestras** del 10 % de
+los clientes. En la primera versión se usaba una sola muestra, y eso hacía la
+decisión inestable: bastaba añadir un 0,45 % de datos nuevos para que el ganador
+pasara de k=5 a k=4. Promediar además permite reportar la dispersión, que aquí
+es informativa: el margen entre k=5 y el resto cabe dentro de una desviación
+típica.
 
-| k | Silhouette |
-|---:|---:|
-| 3 | 0,4993 |
-| 4 | 0,4787 |
-| **5** | **0,5063** ← elegido |
-| 6 | 0,4679 |
+| k | Silhouette (media) | Desviación típica |
+|---:|---:|---:|
+| 3 | 0,4882 | 0,0065 |
+| 4 | 0,4708 | 0,0057 |
+| **5** | **0,4950** | 0,0082 |
+| 6 | 0,4662 | 0,0030 |
 
-El silhouette más alto (k=5) se reentrenó sobre los 131.186 clientes completos. Los IDs de cluster se renumeraron por tamaño descendente.
+Las submuestras se toman por `hash(customer_id, semilla) % 100`, no con
+`DataFrame.sample`. Esto importa: `sample(seed=...)` se apoya en el orden físico
+de las filas dentro de cada partición, así que **no** es reproducible si se
+regenera la capa Gold. Se observó en la práctica —los mismos datos y la misma
+semilla daban silhouettes distintos— y se corrigió. Dos ejecuciones
+consecutivas del módulo dan ahora exactamente las mismas cifras.
 
-**Perfil de los 5 clusters** (promedios sobre features sin escalar):
+El k ganador se reentrena sobre los 131.186 clientes completos y los ids de
+cluster se renumeran por tamaño descendente, para que `cluster_id = 0` sea
+siempre el mayoritario y la interfaz no cambie de significado entre
+reentrenamientos.
 
-| Cluster | n (clientes) | % | Frecuencia | Unidades totales | Productos distintos | Categorías distintas | Canasta media | Recencia (días) | Etiqueta de negocio |
+**Visualización del clustering.** Se proyectan las 6 variables escaladas a dos
+componentes principales, que explican el **80,9 %** de la varianza. Se persiste
+una muestra de 15.000 puntos más los centroides en `gold/cluster_pca`. El
+dashboard los dibuja como *small multiples* —un panel por segmento, con el resto
+de la nube en gris— en vez de un único gráfico de cinco colores: con cinco
+series simultáneas en una dispersión, la paleta no supera el umbral de
+distinguibilidad para visión con daltonismo.
+
+**Perfil de los 5 clusters** (promedios sobre las variables sin escalar):
+
+| Cluster | n | % | Frecuencia | Unidades | Productos | Categorías | Canasta | Recencia | Etiqueta |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
-| **0** | 51.078 | 39 % | 3,7 | 17,9 | 13,2 | 3,4 | 4,9 | 28,5 | 🟡 **Ocasionales recientes** — compran poco pero estuvieron hace ~1 mes |
-| **1** | 32.023 | 24 % | 14,4 | 120,4 | 51,8 | 7,7 | 9,0 | 12,7 | 🟢 **Regulares activos** — varios sets de compra, canasta promedio, recencia baja |
-| **2** | 28.001 | 21 % | 1,5 | 7,7 | 7,0 | 2,2 | 4,8 | 124,6 | ⚫ **Inactivos / dormidos** — compraron al inicio del semestre y no volvieron |
-| **3** | 10.447 | 8 % | 35,1 | 432,2 | 106,4 | 11,0 | 13,8 | 4,8 | 🔵 **VIPs / power users** — alta frecuencia, alta diversidad, recencia mínima |
-| **4** | 9.637 | 7 % | 4,8 | 113,4 | 53,6 | 7,5 | **24,5** | 45,3 | 🟠 **Canasta grande** — compran esporádicamente pero llenan la canasta |
+| **0** | 51.055 | 39 % | 3,7 | 18 | 13 | 3,4 | 4,9 | 28 | **Ocasionales recientes** — compran poco, estuvieron hace ~1 mes |
+| **1** | 32.041 | 24 % | 14,4 | 120 | 52 | 7,7 | 9,0 | 13 | **Regulares activos** — varias compras, canasta media, recencia baja |
+| **2** | 28.000 | 21 % | 1,5 | 8 | 7 | 2,2 | 4,8 | 125 | **Inactivos** — compraron al inicio del semestre y no volvieron |
+| **3** | 10.454 | 8 % | 35,1 | 432 | 106 | 11,0 | 13,8 | 5 | **VIP** — alta frecuencia, alta diversidad, recencia mínima |
+| **4** | 9.636 | 7 % | 4,8 | 113 | 54 | 7,5 | **24,5** | 45 | **Canasta grande** — esporádicos pero llenan el carro |
+
+Las etiquetas de negocio no están cableadas a un `cluster_id`: el dashboard las
+deriva de los promedios del perfil, así que siguen teniendo sentido si un
+reentrenamiento cambia el número o el orden de los segmentos.
 
 **Validación cualitativa**: el cliente outlier 336296 (535 transacciones) cae correctamente en el cluster 3 (VIP). El cluster 4 (canasta grande, baja frecuencia) corrobora la lectura de la sección 3.6 sobre la baja correlación entre `frequency` y `avg_basket_size`.
 
@@ -274,47 +305,91 @@ El silhouette más alto (k=5) se reentrenó sobre los 131.186 clientes completos
 
 ### 4.2 Recomendador por reglas de asociación (FP-Growth)
 
-Configuración: `minSupport=0.05` (≈ 55.450 canastas), `minConfidence=0.30`, sobre el top-200 productos por volumen, canastas de 2–30 ítems.
+Configuración: `minSupport=0.05` (≈ 44.500 de las 889.839 canastas que quedan
+tras filtrar al top-200 de productos), `minConfidence=0.30`, canastas de 2 a 30
+ítems.
 
-**327 reglas** producidas. Top-10 por `lift`:
+**270 reglas**, de las cuales **213 tienen un antecedente de un solo producto**.
 
-| Antecedente | Consecuente | Confianza | Lift |
-|---:|---:|---:|---:|
-| Prod 1 | Prod 2 (VERDURAS DE FRUTOS) | 0,528 | **4,44** |
-| Prod 2 (VERD. FRUTOS) | Prod 1 | 0,423 | 4,44 |
-| Prod 16 | Prod 21 | 0,575 | 3,14 |
-| Prod 3 (VERD. RAÍZ/TUBÉRC.) | Prod 21 | 0,575 | 3,14 |
-| Prod 21 | Prod 16 | 0,605 | 2,94 |
-| Prod 3 | Prod 16 | 0,605 | 2,94 |
-| Prod 31 | Prod 3 | 0,731 | 2,90 |
-| Prod 4 | Prod 7 | 0,557 | 2,62 |
-| Prod 5 (AROMÁTICAS) | Prod 7 (VERD. FRUTOS) | 0,557 | 2,62 |
-| Prod 21 | Prod 16 | 0,532 | 2,58 |
+> **Corrección importante respecto a la primera versión.** Aquella reportaba
+> «327 reglas» y una tabla con entradas repetidas. La causa era un defecto en el
+> aplanado: FP-Growth devuelve antecedentes **multi-ítem**, y el código hacía
+> `explode()` sobre ellos. La regla `{3,16} → {21}` con confianza 0,575 se
+> partía en dos filas —`3 → 21` y `16 → 21`, ambas con 0,575— que son falsas
+> como reglas individuales: esa confianza pertenece al par, no a cada producto
+> por separado. El resultado eran 327 filas para sólo 215 parejas distintas, con
+> el par `5 → 10` repetido once veces con once confianzas contradictorias.
+>
+> Ahora el antecedente se conserva como conjunto (`antecedent_ids`,
+> `antecedent_label`, `antecedent_size`) y se recupera el `support`, que antes se
+> descartaba. Detalle en [ADR-0007](ADR/0007-antecedentes-como-conjunto.md);
+> las invariantes están fijadas en `tests/test_product_rules.py`.
 
-**Lectura**: las reglas con mayor lift cruzan verduras de raíz (papa, cebolla, zanahoria), verduras de fruto (tomate, pimentón) y aromáticas, lo cual es coherente con la lectura de la sección 3.5 (operación dominada por frescos) y refleja **comportamiento de canasta de mercado tradicional**: vegetales que se compran en conjunto para preparar comida casera. Una `lift = 4,4` indica que comprar Prod 1 multiplica por 4× la probabilidad de comprar Prod 2 respecto al baseline.
+Top-10 por `lift`:
 
-**Uso en el dashboard**: la página "Recomendador → Producto → productos asociados" permite seleccionar un `antecedent_product_id` y ver las reglas que disparan, ordenadas por lift. Sirve directamente para *cross-selling* en góndola física o en e-commerce.
+| Antecedente | Consecuente | Soporte | Confianza | Lift |
+|---|---:|---:|---:|---:|
+| Prod 1 | Prod 2 | 0,0502 | 0,528 | **4,44** |
+| Prod 2 | Prod 1 | 0,0502 | 0,423 | 4,44 |
+| Prod 3 **+** Prod 16 | Prod 21 | 0,0512 | 0,575 | 3,14 |
+| Prod 3 **+** Prod 21 | Prod 16 | 0,0512 | 0,605 | 2,94 |
+| Prod 31 | Prod 3 | 0,0586 | 0,731 | 2,90 |
+| Prod 4 **+** Prod 5 | Prod 7 | 0,0536 | 0,557 | 2,62 |
+| Prod 21 | Prod 16 | 0,0975 | 0,532 | 2,58 |
+| Prod 16 | Prod 21 | 0,0975 | 0,473 | 2,58 |
+| Prod 30 | Prod 21 | 0,0534 | 0,472 | 2,57 |
+| Prod 30 | Prod 16 | 0,0600 | 0,530 | 2,57 |
+
+Las tres reglas con antecedente compuesto (`3 + 16`, `3 + 21`, `4 + 5`) son
+exactamente las que la versión anterior partía y duplicaba.
+
+**Lectura**: las reglas de mayor lift cruzan verduras de raíz, verduras de fruto
+y aromáticas, coherente con la sección 3.5 (operación dominada por frescos) y
+con un **comportamiento de canasta de mercado tradicional**. Un `lift = 4,44`
+indica que ver Prod 1 en una canasta multiplica por 4,4 la probabilidad de
+encontrar Prod 2 respecto al azar.
+
+**Uso en el dashboard**: la pestaña "Producto → productos" filtra con
+`list_contains(antecedent_ids, :producto)` y muestra la regla completa
+(`3 + 16 → 21`), con un interruptor para restringirse a antecedentes simples. El
+diagrama de flujo del panorama usa **sólo** reglas simples: un sankey no puede
+representar honestamente una condición conjunta.
 
 ### 4.3 Recomendador cliente–producto (ALS implícito)
 
-Configuración: `rank=16, maxIter=10, regParam=0.05, implicitPrefs=True`. Top-10 productos por cliente.
+Configuración: `rank=16, maxIter=10, regParam=0.05, implicitPrefs=True`,
+`coldStartStrategy='drop'`. Top-10 productos por cliente.
 
 **1.311.860 recomendaciones** persistidas (131.186 clientes × 10).
 
-**Distribución de scores por rango de recomendación**:
+**Distribución de scores por rango:**
 
 | Rank | min(score) | max(score) | avg(score) |
 |---:|---:|---:|---:|
 | 1 | 0,007 | 1,475 | 0,751 |
 | 2 | 0,006 | 1,373 | 0,713 |
 | 5 | 0,005 | 1,314 | 0,650 |
-| 10 | 0,005 | 1,217 | 0,586 |
+| 10 | 0,005 | 1,218 | 0,586 |
 
-Los scores decrecen suavemente con el rank, lo que indica que el modelo está discriminando y no produciendo recomendaciones planas.
+Los scores decrecen suavemente con el rango, lo que indica que el modelo
+discrimina y no produce recomendaciones planas.
 
-**Validación cualitativa**: para el cliente VIP 336296, ALS recomienda los productos {18, 3, 50, 8, 41, 31, 33, 45, 47, 6}. Esto incluye Prod 3 (VERDURAS RAÍZ — la categoría #1 del supermercado) en posición #2, lo cual es consistente con un cliente cuyo historial está dominado por frescos.
+> La primera versión afirmaba que para el cliente 336296 el modelo recomendaba
+> `{18, 3, 50, 8, 41, 31, 33, 45, 47, 6}` con Prod 3 en segunda posición. **Esa
+> lista no reproduce.** El modelo devuelve `{117, 152, 110, 64, 119, 128, 140,
+> 142, 178, 60}`, sin ningún elemento en común. Lo que sí es cierto —y se ve en
+> el dashboard— es que ALS tiende a recomendar productos de la cola media que el
+> cliente todavía no ha comprado, en lugar de repetirle los superventas que ya
+> conoce. Se retira la afirmación anterior en vez de reescribirla, porque el
+> argumento que sostenía no era el que los datos mostraban.
 
-**Uso en el dashboard**: la página "Recomendador → Cliente → productos sugeridos" muestra lado a lado el historial real del cliente y las recomendaciones ALS, con barras horizontales coloreadas por score.
+**Validación disponible sin etiquetas**: la interfaz muestra lado a lado el
+historial real del cliente y las recomendaciones, e indica cuántas de las diez
+ya estaban en su historial. Es una comprobación de plausibilidad y de novedad,
+no una métrica de calidad; ver la sección 4.4.
+
+**Uso en el dashboard**: pestaña "Cliente → productos", con el historial top-10
+por unidades junto a las recomendaciones ordenadas por score.
 
 ### 4.4 Limitaciones reconocidas
 
@@ -330,7 +405,7 @@ Los scores decrecen suavemente con el rank, lo que indica que el modelo está di
 ### 5.1 Hallazgos principales
 
 1. **Operación dominada por frescos y fines de semana.** Verduras y jugos representan el grueso del volumen; sábado y domingo concentran ~40 % más transacciones que un miércoles. Impacta directamente staffing, abastecimiento y rotación de inventario.
-2. **Catálogo muy subutilizado.** Sólo 449 SKUs de ~95.000 catalogados se vendieron en 6 meses (0,5 %); 60 % de las categorías permanecen inactivas. Oportunidad de depuración o re-merchandising.
+2. **Catálogo muy subutilizado.** Sólo 449 SKUs de los **69.891** catalogados se vendieron en 6 meses (0,6 %); 60 % de las categorías permanecen inactivas. Oportunidad de depuración o re-merchandising.
 3. **Calidad de datos del catálogo:** 46 % de los productos transaccionados no tienen categoría asignada — pendiente de saneamiento con el cliente.
 4. **Pareto clásico en clientes:** 8 % de los clientes (cluster VIP) capturan 35 % del volumen; 21 % son inactivos y 24 % son regulares activos. Hay un tercio del volumen capturable con políticas de retención dirigidas.
 5. **Outlier extremo:** el cliente 336296 (535 transacciones, cluster VIP) merece revisión — posible cuenta empresarial o canal de revendedor.
@@ -340,13 +415,13 @@ Los scores decrecen suavemente con el rank, lo que indica que el modelo está di
 
 | Decisión de negocio | Insumo del análisis |
 |---|---|
-| **Staffing y abastecimiento por día** | Estacionalidad semanal (sáb+dom = 140 % de un miércoles) |
+| **Staffing y abastecimiento por día** | Estacionalidad semanal (sáb+dom ≈ 139 % de un miércoles) |
 | **Cross-selling en góndola / e-commerce** | Reglas FP-Growth (sección 4.2): emparejar productos con lift > 2 |
 | **Programa de fidelización VIP** | Cluster 3 (8 % de clientes, alta frecuencia + diversidad) |
 | **Campaña de re-activación** | Cluster 2 (21 % de clientes, recencia >120 días) |
 | **Recomendaciones personalizadas en app/correo** | Tabla `customer_recommendations` (top-10 ALS por cliente) |
 | **Promociones por monto mínimo** | Cluster 4 (canasta grande, baja frecuencia) |
-| **Saneamiento de catálogo** | 206 productos sin categoría, 95 k SKUs nunca vendidos |
+| **Saneamiento de catálogo** | 206 productos sin categoría, 69.442 SKUs nunca vendidos |
 | **Detección de cuentas atípicas** | Cliente 336296 (535 txns vs media de 8,45) |
 
 ### 5.3 Próximos pasos sugeridos
@@ -366,23 +441,44 @@ La solución entregada cumple los requerimientos funcionales (RF-1 a RF-8) y no 
 ## 6. Reproducción end-to-end
 
 ```bash
-# 1) Setup
-make install              # crea .venv e instala dependencias
+git clone https://github.com/criskian/retail-transactions-lakehouse
+cd retail-transactions-lakehouse
+git lfs pull                 # el dataset se versiona con Git LFS
 
-# 2) Pipeline completo (≈ 3 min en una laptop con 16 GB RAM)
-make pipeline             # bronze → silver → gold → models
+pip install invoke
+invoke install               # crea .venv e instala dependencias
+invoke winutils              # sólo Windows: winutils.exe + hadoop.dll
+invoke doctor                # verifica Java <= 17, Hadoop y los workers de Python
 
-# 3) Dashboard
-make app                  # abre http://localhost:8501
-
-# 4) Demostrar incorporación de nuevos datos (RF-8)
-#    - Copiar un CSV adicional a data/landing/Transactions/
-#    - O subirlo desde la página "Generación de nuevos resultados"
-make ingest-check         # ver qué cambió
-make ingest               # ejecutar pipeline si hay cambios
+invoke pipeline              # bronze -> silver -> gold -> models  (~8 min)
+invoke quality               # 26 contratos sobre la capa Gold
+invoke export                # construye data/serving/serving.duckdb (24 MB)
+invoke app                   # http://localhost:8501
 ```
 
-Las tablas Gold quedan en `data/gold/`. Los modelos pyspark.ml persistidos quedan en `data/models/`. El log de corridas de ingesta queda en `data/landing/_runs.jsonl`.
+En Linux y macOS `make` ofrece los mismos objetivos.
+
+**Incorporar datos nuevos:**
+
+```bash
+cp nueva_tienda.csv data/landing/Transactions/115_Tran.csv
+invoke ingest --check        # qué cambió
+invoke ingest                # reprocesa y reexporta si hay novedades
+```
+
+**Tiempos medidos** (laptop, 8 núcleos, 16 GB):
+
+| Etapa | Duración |
+|---|---:|
+| bronze | ~17 s |
+| silver | ~13 s |
+| gold (15 marts) | ~76 s |
+| models (K-Means + PCA + FP-Growth + ALS) | ~291 s |
+| export | ~25 s |
+| **total** | **~7 min** |
+
+Las cifras de este informe no se escriben a mano: se generan con
+`python docs/regen_figures.py`, que las consulta a la capa de serving.
 
 ---
 
