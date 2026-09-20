@@ -1,20 +1,37 @@
 # ====== Datos del proyecto ======
-data/landing/
+# Capas derivadas: se regeneran con `invoke pipeline`, nunca se versionan.
 data/bronze/
 data/silver/
 data/gold/
-# Catch-all por si quedan datos sueltos en cualquier carpeta
+data/models/
+data/serving/
+data/landing/_manifest.json
+data/landing/_runs.jsonl
+data/landing/_quarantine/
+
+# Catch-all por si quedan datos sueltos en cualquier carpeta...
 *.csv
-*.parquet
 *.tsv
+*.parquet
+*.duckdb
 *.json.gz
 *.xlsx
+
+# ...con las excepciones que SI se versionan (ver .gitattributes -> Git LFS):
+!data/landing/Transactions/*.csv
+!data/landing/Products/*.csv
+!docs/demo_assets/*.csv
 
 # ====== Entregables binarios (presentaciones y guiones) ======
 # El repo guarda las fuentes en Markdown; los PDF/DOCX se generan/exportan aparte.
 *.pdf
 *.docx
 *.pptx
+
+# ...salvo los assets del README/informe, que SI deben viajar con el repo.
+!docs/assets/*.png
+!docs/assets/*.svg
+!docs/assets/*.gif
 
 # ====== Secretos y credenciales ======
 .env

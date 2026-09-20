@@ -1,0 +1,11 @@
+# ---------------------------------------------------------------------------
+# Capa de CÓMPUTO (ETL + modelos). Se instala en local y en CI, nunca en el
+# contenedor de serving.
+# Requiere un JDK <= 17 (ver src/pipeline/spark_session.py).
+# ---------------------------------------------------------------------------
+-r requirements.txt
+
+pyspark==3.5.5
+# delta-spark 3.3.x es la línea compatible con Spark 3.5 (la 4.x exige Spark 4.0)
+delta-spark==3.3.3
+pandera==0.26.1

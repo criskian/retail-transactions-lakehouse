@@ -18,8 +18,8 @@
 | **Clientes únicos** | **131.186** | base activa en el semestre |
 | **Tamaño promedio de canasta** | **9,55 items** | una canasta típica trae ~10 productos |
 | **Tiendas activas** | 4 | 102, 103, 107, 110 |
-| **Productos transaccionados** | 449 (de 95.000 en catálogo) | catálogo muy ancho, *long tail* concentrado |
-| **Categorías observadas** | 21 (de 50 en catálogo) | 58% del catálogo no se movió en el semestre |
+| **Productos transaccionados** | 449 (de **69.891** en el catálogo) | catálogo muy ancho, *long tail* concentrado |
+| **Categorías observadas** | **20** (de 50 en el catálogo) | 60 % del catálogo no se movió en el semestre |
 
 **Lectura ejecutiva:** la operación es de **alto volumen y canasta pequeña pero diversa** (10 items por compra). Una porción muy grande del catálogo permanece inactiva en el período, lo cual sugiere oportunidad de depuración o re-merchandising.
 
@@ -73,15 +73,18 @@ Aquí el hallazgo es de outlier: el cliente **336296** registra **535 transaccio
 
 | Día | Transacciones | Índice (Mié=100) |
 |---|---:|---:|
-| **Domingo** | 191.406 | 140 |
+| **Domingo** | 191.406 | 139 |
 | **Sábado** | 189.015 | 138 |
-| Viernes | 158.766 | 116 |
+| Jueves | 158.766 | 116 |
 | Martes | 150.739 | 110 |
-| Jueves | 139.370 | 102 |
 | Lunes | 142.445 | 104 |
+| Viernes | 139.370 | 102 |
 | Miércoles | 137.245 | 100 |
 
-**Lectura ejecutiva:** la operación está **fuertemente sesgada al fin de semana** (sáb+dom ~40% más volumen que un miércoles). Esto impacta directamente decisiones de staffing, abastecimiento e inventario.
+> Jueves y viernes aparecían intercambiados en la primera versión. El jueves es
+> el tercer día más activo. Las cifras se generan con `docs/regen_figures.py`.
+
+**Lectura ejecutiva:** la operación está **fuertemente sesgada al fin de semana** (sáb+dom ~39 % más volumen que un miércoles). Esto impacta directamente decisiones de staffing, abastecimiento e inventario.
 
 ---
 
@@ -157,7 +160,7 @@ Correlación Pearson entre 6 features de cliente:
 ### Hallazgos principales
 
 1. **Operación dominada por frescos y fines de semana.** La carga operacional se concentra en sáb+dom, con verduras y jugos como categorías ancla.
-2. **Catálogo subutilizado.** El 99,5% de los SKUs catalogados no se vendieron en 6 meses; eso es una oportunidad de depuración.
+2. **Catálogo subutilizado.** El **99,4 %** de los SKUs catalogados no se vendieron en 6 meses; eso es una oportunidad de depuración.
 3. **Calidad de datos del catálogo:** 46% de los productos transaccionados no tienen categoría asignada — pendiente de saneamiento.
 4. **Base de clientes con cola larga:** 26% son one-shot. Hay un tercio del volumen capturable con políticas de retención básicas.
 5. **Distribución Pareto clásica:** top 10% genera 42% del volumen.
@@ -166,10 +169,10 @@ Correlación Pearson entre 6 features de cliente:
 
 | Decisión | Insumo del análisis |
 |---|---|
-| **Staffing y abastecimiento** | Estacionalidad semanal (sáb+dom = 140% de un miércoles) |
+| **Staffing y abastecimiento** | Estacionalidad semanal (sáb+dom ≈ 139 % de un miércoles) |
 | **Programa de fidelización** | Top 10% de clientes = 42% del volumen |
 | **Campañas de retención** | 34.513 clientes con 1 sola compra |
-| **Saneamiento de catálogo** | 206 productos sin categoría, 95k SKUs nunca vendidos |
+| **Saneamiento de catálogo** | 206 productos sin categoría, 69.442 SKUs nunca vendidos |
 | **Detección de cuentas atípicas** | Cliente 336296 con 535 transacciones vs media de 8 |
 
 ### Lo que habilita esto para la próxima entrega
@@ -181,9 +184,10 @@ Las correlaciones del heatmap **validan que las features (frecuencia, volumen, d
 ## 9. Cómo reproducir estos resultados
 
 ```bash
-make install      # crea .venv e instala dependencias
-make pipeline     # bronze -> silver -> gold (~1 minuto)
-make app          # dashboard interactivo en http://localhost:8501
+invoke install    # crea .venv e instala dependencias
+invoke pipeline   # bronze -> silver -> gold -> models (~8 minutos)
+invoke export     # construye data/serving/serving.duckdb
+invoke app        # dashboard interactivo en http://localhost:8501
 ```
 
 Las tablas Gold de las que se derivan estas conclusiones están en `data/gold/`:

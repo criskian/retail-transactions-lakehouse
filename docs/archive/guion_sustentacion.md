@@ -1,3 +1,11 @@
+> **Documento archivado.** Guion preparado para la sustentación académica de
+> junio de 2026. Se conserva como registro; algunas cifras y rutas quedaron
+> desactualizadas tras la refactorización de septiembre. Para el estado actual
+> del proyecto, ver el [README](../../README.md), el
+> [informe técnico](../informe_tecnico.md) y los [ADR](../ADR/).
+
+---
+
 # Guion de sustentación — 10-jun-2026
 
 **Autores:** Santiago Espinosa · Cristian Molina

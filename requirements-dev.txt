@@ -1,0 +1,7 @@
+-r requirements-pipeline.txt
+
+pytest==8.3.4
+pytest-cov==6.0.0
+ruff==0.16.8
+pre-commit==4.0.1
+invoke==2.2.0
