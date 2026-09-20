@@ -57,6 +57,10 @@ known-first-party = ["src", "app"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+# `src` es un paquete namespace y el proyecto no se instala para correr los
+# tests, así que la raíz del repositorio tiene que estar en sys.path de forma
+# explícita. En local colaba por el directorio de trabajo; en CI no.
+pythonpath = ["."]
 addopts = "-ra --strict-markers"
 markers = [
     "spark: test que necesita una SparkSession (lento; requiere JDK <= 17)",
