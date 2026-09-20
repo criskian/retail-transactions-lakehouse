@@ -1,130 +1,231 @@
-# Análisis y Modelado Analítico de Transacciones de Supermercado
+# Retail Transactions Lakehouse
 
-**Curso:** Procesamiento Distribuido de Datos — G1
-**Autores:** Santiago Espinosa · Cristian Molina
-**Entrega 3 (05-jun-2026):** Código fuente ejecutable + Informe técnico
-**Entrega 4 (09/10-jun-2026):** Sustentación funcional del Análisis Avanzado
+[![ci](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/ci.yml)
+[![pipeline](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/pipeline.yml)
+[![python](https://img.shields.io/badge/python-3.11-blue)](pyproject.toml)
+[![pyspark](https://img.shields.io/badge/pyspark-3.5.5-e25a1c)](requirements-pipeline.txt)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-## Stack
+Lakehouse medallion sobre **1,1 millones de canastas** reales de supermercado:
+ETL distribuido con PySpark, segmentación y recomendación con Spark MLlib, y un
+dashboard analítico servido desde DuckDB.
 
-PySpark 3.5 (ETL + MLlib) → Parquet medallion Bronze/Silver/Gold → DuckDB (consulta) → Streamlit (dashboard).
+**[→ Demo en vivo](https://retail-transactions-lakehouse.streamlit.app)**
+· [Informe técnico](docs/informe_tecnico.md)
+· [Arquitectura](docs/arquitectura.md)
+· [Decisiones de diseño](docs/ADR/)
+
+> La demo duerme tras 12 h sin visitas; el primer acceso la despierta en unos
+> segundos.
+
+![Resumen ejecutivo](docs/assets/dashboard.png)
+
+<details>
+<summary>Más capturas</summary>
+
+**Segmentación** — búsqueda de k, proyección PCA como small multiples, perfiles en radar y lectura de negocio por segmento.
+
+![Segmentación](docs/assets/segmentacion.png)
+
+**Recomendador** — reglas de asociación y recomendaciones personalizadas.
+
+![Recomendador](docs/assets/recomendador.png)
+
+</details>
+
+---
+
+## El problema
+
+Un supermercado entrega seis meses de transacciones de cuatro tiendas. Cada fila
+es una canasta: fecha, tienda, cliente y la lista de productos concatenada por
+espacios. **No hay precios, ni identificador de transacción, ni cantidades.**
+
+De ahí hay que sacar: qué se vende, cuándo, a quién, qué productos se compran
+juntos y qué recomendarle a cada cliente. Y hay que hacerlo de forma que
+incorporar un fichero nuevo regenere todos los resultados sin intervención.
+
+## Lo que el dato obliga a decidir
+
+| Restricción | Consecuencia de diseño |
+|---|---|
+| La canasta viene como una cadena de productos | El `explode` lleva la tabla de 1.108.987 filas a **10.591.792** |
+| No hay id de transacción | Se construye como `sha2(fecha\|tienda\|cliente\|lista)`: determinista, así reprocesar no duplica |
+| No hay cantidad | Si un producto aparece *N* veces en la canasta, son *N* unidades |
+| Un producto mapea a varias categorías | Se resuelve a 1:1 con `min(category_id)`; sin eso el join infla todos los conteos |
+| No hay precios | Toda métrica es **relativa**: volumen, frecuencia, diversidad, recencia |
+
+## Arquitectura
+
+```
+  data/landing/*.csv                      GitHub Actions (JDK 17)
+         │                          ┌──────────────────────────────┐
+         ▼                          │  bronze  raw fiel a la fuente│
+   ┌───────────┐                    │  silver  explode + catálogo  │
+   │  Bronze   │  Parquet           │  gold    marts analíticos    │
+   │  Silver   │  particionado      │  models  KMeans/FPGrowth/ALS │
+   │  Gold     │  por store_id      │  export  serving.duckdb      │
+   └───────────┘                    └──────────────┬───────────────┘
+                                                   │ release asset
+                                                   ▼
+                                     ┌──────────────────────────────┐
+                                     │  Streamlit + DuckDB          │
+                                     │  24 MB · sin JVM · read-only│
+                                     └──────────────────────────────┘
+```
+
+El **cómputo y el serving están separados a propósito**: la aplicación no
+importa PySpark en ningún momento, sólo lee el artefacto que produce CI. Eso es
+lo que la hace desplegable en una plataforma sin Java y con 1 GB de RAM.
+Ver [ADR-0006](docs/ADR/0006-computo-y-serving-separados.md).
+
+| Capa | Filas | Tamaño |
+|---|---:|---:|
+| Landing (6 CSV) | 1.108.987 canastas | 55 MB |
+| Silver `transactions_items` | 10.591.792 | 379 MB |
+| Gold (15 marts) | — | 9,5 MB |
+| **Serving `serving.duckdb`** | — | **24 MB** |
+
+## Resultados
+
+**Segmentación (K-Means, k=5, silhouette 0,495 ± 0,008).** Seis variables de
+comportamiento escaladas con z-score. El `k` se elige por silhouette
+**promediado sobre 5 submuestras**: con una sola muestra el ganador oscilaba
+entre 4 y 5, y bastaba un 0,45 % de datos nuevos para que cambiara. Las
+submuestras se toman por hash del id, no con `DataFrame.sample`, que depende del
+orden físico de las filas y por tanto no es reproducible al regenerar la capa
+Gold — dos ejecuciones consecutivas dan ahora cifras idénticas. La proyección
+PCA explica el **80,9 %** de la varianza en dos dimensiones.
+
+| Segmento | % de clientes | Rasgo |
+|---|---:|---|
+| Ocasionales recientes | 39 % | Compran poco, estuvieron hace ~1 mes |
+| Regulares activos | 24 % | ~14 compras, canasta media, recencia baja |
+| Inactivos | 21 % | Compraron al inicio y no volvieron |
+| VIP | 8 % | Alta frecuencia y diversidad; concentran el volumen |
+| Canasta grande | 7 % | Esporádicos pero llenan el carro (~24 ítems) |
+
+**Reglas de asociación (FP-Growth).** 270 reglas con soporte ≥ 5 % y confianza
+≥ 30 %; 213 tienen antecedente de un solo producto. Las de mayor lift cruzan
+verduras de raíz, verduras de fruto y aromáticas — canasta de mercado
+tradicional. El antecedente se conserva como **conjunto**: una regla puede ser
+`3 + 16 → 21`, y partirla en dos reglas simples falsearía la confianza
+([ADR-0007](docs/ADR/0007-antecedentes-como-conjunto.md)).
+
+**Recomendación (ALS implícito).** Top-10 por cliente para los 131.186 clientes.
+La cantidad comprada se interpreta como confianza del interés, no como rating.
+
+**Hallazgos de negocio.** Sábado y domingo concentran ~39 % más transacciones que
+un miércoles. Sólo 449 de los 69.891 SKUs del catálogo se vendieron en seis
+meses. El 46 % de los productos transaccionados no tiene categoría asignada:
+un problema de calidad del catálogo, no del análisis.
+
+## Cómo correrlo
+
+**Requisitos:** Python 3.11, JDK 17 (PySpark 3.5 no soporta Java 21+), y en
+Windows `winutils.exe` + `hadoop.dll`.
+
+```bash
+git clone https://github.com/criskian/retail-transactions-lakehouse
+cd retail-transactions-lakehouse
+git lfs pull                      # el dataset se versiona con Git LFS
+
+pip install invoke
+invoke install                    # crea .venv e instala dependencias
+invoke winutils                   # sólo Windows
+invoke doctor                     # verifica Java, Hadoop y los workers de Python
+
+invoke pipeline                   # bronze -> silver -> gold -> models  (~8 min)
+invoke export                     # construye data/serving/serving.duckdb
+invoke app                        # http://localhost:8501
+```
+
+`make` sigue funcionando en Linux y macOS con los mismos objetivos. En Windows
+usa `invoke`, que no depende de tener make instalado.
+
+**Incorporar datos nuevos:**
+
+```bash
+cp nueva_tienda.csv data/landing/Transactions/115_Tran.csv
+invoke ingest --check             # qué cambió
+invoke ingest                     # reprocesa y republica si hay novedades
+```
+
+Hay un fichero de ejemplo en [`docs/demo_assets/`](docs/demo_assets/).
+
+**Con Docker** (sólo la capa de serving, ~250 MB):
+
+```bash
+docker build -t retail-lakehouse .
+docker run -p 8501:8501 retail-lakehouse
+```
+
+## Calidad
+
+```bash
+invoke test      # pytest: pipeline e2e sobre datos sintéticos + AppTest de las 5 páginas
+invoke lint      # ruff check + format
+```
+
+La suite levanta un **lakehouse en miniatura** con datos sintéticos de la misma
+forma que los reales, así que corre en CI sin necesitar el dataset ni Git LFS.
+
+Después de cada corrida, `src/pipeline/quality.py` valida **26 contratos** sobre
+la capa Gold —esquemas con pandera e invariantes entre tablas— y falla el build
+si alguno se rompe. Ejemplos: que cada cliente segmentado exista en las
+features, que los KPIs cuadren con los agregados diarios, y que ninguna regla de
+asociación tenga el consecuente dentro de su propio antecedente.
 
 ## Estructura
 
 ```
-proyecto/
-├── data/
-│   ├── landing/{Transactions,Products}/  # CSV de entrada
-│   ├── bronze/                           # Parquet crudo
-│   ├── silver/transactions_items/        # (transacción, producto)
-│   ├── gold/                             # data marts
-│   │   ├── fact_kpis/
-│   │   ├── fact_sales_daily/
-│   │   ├── dim_customer_features/
-│   │   ├── dim_product_features/
-│   │   ├── fact_category_metrics/
-│   │   ├── cluster_assignments/          # ← entrega 3
-│   │   ├── cluster_profiles/             # ← entrega 3
-│   │   ├── kmeans_search/                # ← entrega 3
-│   │   ├── product_rules/                # ← entrega 3 (FP-Growth)
-│   │   └── customer_recommendations/     # ← entrega 3 (ALS)
-│   └── models/                           # modelos pyspark.ml persistidos
-├── src/pipeline/
-│   ├── bronze.py · silver.py · gold.py
-│   ├── models.py                         # K-Means + FP-Growth + ALS
-│   ├── ingest.py                         # incorporación de nuevos datos (RF-8)
-│   ├── run.py                            # CLI orquestador
-│   └── spark_session.py · paths.py
-├── app/streamlit_app.py                  # dashboard (5 páginas)
-├── docs/
-│   ├── arquitectura.md
-│   ├── resumen_ejecutivo.md
-│   └── informe_tecnico.md                # ← entrega 3
-├── requirements.txt
-└── Makefile
+src/pipeline/
+  spark_session.py   Sanea el entorno antes de levantar el JVM (Java, workers, Hadoop native IO)
+  bronze.py          CSV -> Parquet, sin lógica de negocio
+  silver.py          explode + join con el catálogo + transaction_id
+  gold.py            15 marts: negocio + serving
+  models.py          K-Means + PCA, FP-Growth, ALS
+  quality.py         Contratos de datos sobre Gold
+  export_serving.py  Gold -> serving.duckdb
+  ingest.py          Detección de cambios por sha256, lock y registro de corridas
+  storage.py         Escritura atómica (evita dejar marts vacíos)
+app/
+  theme.py           Paleta validada y opciones base de ECharts
+  data.py            Resolución de la fuente de datos; read-only
+  views/             Una página por módulo
 ```
 
-## Cómo correrlo
+## Stack
 
-> El dataset **no** está versionado. Antes de correr el pipeline hay que dejar los CSV en `data/landing/`:
->
-> ```
-> data/landing/
-> ├── Transactions/{102_Tran.csv, 103_Tran.csv, 107_Tran.csv, 110_Tran.csv}
-> └── Products/{Categories.csv, ProductCategory.csv}
-> ```
->
-> Los archivos vienen del dataset del curso (separados por `|`, sin header en transacciones).
+**Procesamiento** PySpark 3.5 · Parquet · Spark MLlib
+**Serving** DuckDB · Streamlit · Apache ECharts
+**Calidad** pytest · pandera · ruff
+**Operación** GitHub Actions · Docker · Git LFS
 
-```bash
-make install         # crea .venv e instala dependencias (PySpark, Streamlit, DuckDB, ...)
-make pipeline        # bronze -> silver -> gold -> models (≈ 3 min sobre el dataset completo)
-make app             # abre el dashboard en http://localhost:8501
-```
+Cada elección está argumentada, con lo que se ganó y lo que se cedió, en
+[`docs/ADR/`](docs/ADR/).
 
-Comandos adicionales:
+## Limitaciones conocidas
 
-```bash
-make models          # sólo re-entrena K-Means + FP-Growth + ALS
-make ingest-check    # reporta qué archivos en data/landing/ son nuevos / cambiaron
-make ingest          # detecta cambios y relanza el pipeline si los hay
-```
+- **Sin split train/test.** Los modelos se validan con métricas internas
+  (silhouette, soporte/confianza/lift) y cualitativamente. Un hold-out temporal
+  con `precision@10` es el siguiente paso natural.
+- **Cold start en ALS.** Los clientes ausentes del entrenamiento se descartan
+  (`coldStartStrategy='drop'`). El fallback natural —recomendar el top del
+  cluster K-Means del cliente— está diseñado pero no implementado.
+- **FP-Growth limitado al top-200 de productos.** Con `minSupport=0.01` sobre
+  los 449 productos el FP-tree agota la memoria en un nodo único.
+- **Parquet sin formato transaccional.** No hay ACID ni time travel; se compensa
+  con escrituras atómicas e ids deterministas. Delta Lake sería el siguiente
+  paso ([ADR-0004](docs/ADR/0004-reprocesado-completo.md)).
 
-## Volúmenes procesados
+## Sobre los datos
 
-| Capa | Filas |
-|---|---|
-| Landing (4 archivos CSV) | 1.108.987 canastas |
-| Bronze | 1.108.987 transacciones + 50 categorías + 112.010 product↔category |
-| Silver `transactions_items` | **10.591.792** filas (canasta × producto, con qty agregada) |
-| Gold `fact_sales_daily` | 724 (día × tienda) |
-| Gold `dim_customer_features` | 131.186 clientes |
-| Gold `dim_product_features` | 449 productos |
-| Gold `fact_category_metrics` | 21 categorías |
-| Gold `cluster_assignments` | 131.186 clientes etiquetados con cluster_id ∈ [0..4] |
-| Gold `cluster_profiles` | 5 (un perfil por cluster) |
-| Gold `product_rules` | 327 reglas con `min_support=0.05, min_confidence=0.30` |
-| Gold `customer_recommendations` | 131.186 × 10 = 1.31M recomendaciones top-10 por cliente |
+Dataset académico de transacciones de supermercado (curso de Procesamiento
+Distribuido de Datos). Los identificadores de cliente ya vienen anonimizados en
+el origen; no contiene nombres, direcciones ni medios de pago.
 
-Período cubierto: **2013-01-01 → 2013-06-30** (6 meses) · 4 tiendas (102, 103, 107, 110).
+## Autores
 
-## Qué muestra el dashboard
-
-El sidebar permite navegar entre 5 páginas y aplica filtros globales (tiendas + rango de fechas).
-
-**1) Resumen Ejecutivo**
-- KPIs: total de ventas (unidades), número de transacciones, clientes únicos, tiendas activas.
-- Top 10 productos por unidades vendidas.
-- Top 10 clientes por número de transacciones.
-- Días pico de compra (serie de tiempo + heatmap calendario).
-- Categorías más rentables (barras + pie).
-
-**2) Visualizaciones Analíticas**
-- Serie de tiempo de ventas (granularidad diaria / semanal).
-- Boxplot de la distribución por cliente o categoría (escala log opcional).
-- Heatmap de correlación entre 6 features de cliente (frecuencia, volumen, diversidad de productos / categorías, tamaño promedio de canasta, recencia).
-
-**3) Segmentación de Clientes (K-Means)**
-- Selección de k por silhouette score (k ∈ {3, 4, 5, 6}; ganador: k=5).
-- Distribución de tamaños y perfil medio de cada cluster (heatmap normalizado).
-- Etiquetado de negocio (VIP, regulares activos, ocasionales recientes, inactivos, canasta grande).
-- Buscador: dado un `customer_id`, devuelve el cluster asignado y sus features.
-
-**4) Recomendador de Productos**
-- *Producto → productos asociados* (FP-Growth): reglas con soporte ≥ 5% y confianza ≥ 30% sobre el top-200 de productos.
-- *Cliente → productos sugeridos* (ALS implicit): top-10 recomendaciones por cliente comparadas con su historial real.
-- Tabla de las 30 reglas con mayor `lift` global.
-
-**5) Generación de nuevos resultados**
-- Subir un CSV nuevo al `data/landing/` directamente desde el dashboard.
-- Botones para `--check`, `--run`, `--force` del pipeline incremental.
-- Histórico de corridas leídas desde `data/landing/_runs.jsonl`.
-
-## Reproducción del análisis avanzado
-
-```bash
-make pipeline    # ejecuta bronze → silver → gold → models en cadena
-make app         # navegar al sidebar → "Segmentación de Clientes" / "Recomendador" / "Generación de nuevos resultados"
-```
-
-El informe técnico completo está en [`docs/informe_tecnico.md`](docs/informe_tecnico.md).
+Santiago Espinosa · Cristian Molina — Universidad, 2026.
+Licencia [MIT](LICENSE).

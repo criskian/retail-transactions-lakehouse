@@ -3,7 +3,13 @@
 
 **Curso:** Procesamiento Distribuido de Datos — G1
 **Autores:** Santiago Espinosa · Cristian Molina
-**Versión:** 1.0
+**Versión:** 1.1 — revisada en septiembre de 2026
+
+> **Estado de este documento.** Es la propuesta original de arquitectura, con
+> las cifras del dataset corregidas y las rutas actualizadas a la
+> implementación final. Lo que la propuesta describía y **no** se implementó
+> está marcado como tal en la sección 9. Las decisiones que sí se tomaron, con
+> sus renuncias, están en [`ADR/`](ADR/).
 
 ---
 
@@ -19,8 +25,8 @@ El dataset entregado se compone de dos dominios:
 
 | Dominio | Archivo | Registros | Esquema observado | Separador |
 |---|---|---|---|---|
-| Catálogo | `Products/Categories.csv` | ~70 | `category_id \| category_name` | `\|` |
-| Catálogo | `Products/ProductCategory.csv` | ~95.000 | `product_id \| category_id` | `\|` |
+| Catálogo | `Products/Categories.csv` | **50** | `category_id \| category_name` | `\|` |
+| Catálogo | `Products/ProductCategory.csv` | **112.010** mapeos de **69.891** productos | `product_id \| category_id` | `\|` |
 | Transacciones | `Transactions/102_Tran.csv` | 314.286 | `fecha \| tienda \| cliente \| lista_productos` | `\|` |
 | Transacciones | `Transactions/103_Tran.csv` | 407.130 | idem | `\|` |
 | Transacciones | `Transactions/107_Tran.csv` | 254.633 | idem | `\|` |
@@ -58,7 +64,7 @@ El dataset entregado se compone de dos dominios:
 - **Modularidad:** capas desacopladas (ingesta, procesamiento, analítica, presentación) para que la incorporación de nuevas fuentes solo toque la capa de ingesta.
 - **Reproducibilidad:** entorno declarado (`pyproject.toml` / `requirements.txt`), comando único de ejecución, opcionalmente Dockerfile.
 - **Idempotencia:** re-procesar el mismo archivo no debe duplicar registros (se usa `MERGE` lógico por hash de fila o sobreescritura particionada).
-- **Observabilidad mínima:** logging estructurado por etapa y un `run_id` por ejecución del pipeline.
+- **Observabilidad mínima:** registro por etapa y una entrada por corrida —incluidas las fallidas— en `data/landing/_runs.jsonl`.
 - **Portabilidad:** ejecutable en una laptop (modo local de Spark) sin requerir cluster.
 
 ---
@@ -169,20 +175,24 @@ sequenceDiagram
   - `dim_customer_features` (customer_id, frequency, units_total, distinct_products, distinct_categories, recency_days, avg_basket_size)
   - `dim_product_features` (product_id, category_id, units_total, txn_count, distinct_customers)
   - `cluster_assignments` (customer_id, cluster_id)
-  - `product_recommendations` (product_id, recommended_product_id, score, rule_support, rule_confidence, rule_lift)
+  - `product_rules` (antecedent_ids, antecedent_label, antecedent_size, consequent_product_id, support, confidence, lift)
+  - `customer_recommendations` (customer_id, product_id, score, rank)
+  - `cluster_pca` (proyección 2D de los clusters + centroides)
+  - Marts de *serving* (`fact_product_daily`, `fact_category_daily`, `fact_customer_daily`, `dim_customer_top_products`) que evitan que el dashboard consulte Silver — ver [ADR-0006](ADR/0006-computo-y-serving-separados.md)
 
 ### 5.3 Capa de procesamiento (PySpark)
 Cada paso es un módulo independiente bajo `src/pipeline/` y se invoca por CLI:
 
 ```
-python -m pipeline.run --step bronze
-python -m pipeline.run --step silver
-python -m pipeline.run --step gold
-python -m pipeline.run --step models
-python -m pipeline.run --all
+python -m src.pipeline.run --step bronze
+python -m src.pipeline.run --step silver
+python -m src.pipeline.run --step gold
+python -m src.pipeline.run --step models
+python -m src.pipeline.run --step full    # encadena todo + export
+python -m src.pipeline.run --doctor       # diagnostica Java / Hadoop / workers
 ```
 
-Justificación del motor distribuido: tras el `explode` de la lista de productos se estiman **>10M filas** en Silver; Spark permite procesarlas con SQL declarativo, soporta crecimiento futuro a cluster sin tocar el código de negocio, y es la herramienta central del curso.
+Justificación del motor distribuido: tras el `explode` de la lista de productos Silver llega a **10.591.792 filas**; Spark permite procesarlas con SQL declarativo, soporta crecimiento futuro a cluster sin tocar el código de negocio, y es la herramienta central del curso.
 
 ### 5.4 Capa de modelos analíticos
 
@@ -198,11 +208,13 @@ Se selecciona `k` óptimo en K-Means mediante método del codo + silhouette sobr
 - **Streamlit** como aplicación principal (`app/streamlit_app.py`) con tres páginas:
   1. **Resumen Ejecutivo** — KPIs e indicadores, Top-10, días pico, categorías.
   2. **Visualizaciones Analíticas** — serie de tiempo, boxplots, heatmap de correlaciones.
-  3. **Análisis Avanzado** — visualización de clústeres (PCA 2D) y dos buscadores: "dado un cliente → recomienda" y "dado un producto → productos comprados juntos".
+  3. **Segmentación** — proyección PCA 2D de los clústeres (implementada como *small multiples*, un panel por segmento), perfiles en radar y buscador por cliente.
+  4. **Recomendador** — "dado un cliente → recomienda" (ALS) y "dado un producto → qué se compra con él" (FP-Growth).
+  5. **Generación de nuevos resultados** — ingesta incremental.
 - Lectura directa de Parquet con `pandas`/`duckdb` para baja latencia en el dashboard. El usuario no necesita levantar Spark para *ver* resultados.
 
 ### 5.6 Capa de orquestación
-Pipeline ejecutable con un `Makefile` (`make ingest`, `make pipeline`, `make app`) y un único punto de entrada en Python. Cada etapa registra `run_id`, duración y conteos en `logs/runs.jsonl`.
+Pipeline ejecutable con un `Makefile` (`make ingest`, `make pipeline`, `make app`) y un único punto de entrada en Python. Cada etapa registra duración y conteos en `data/landing/_runs.jsonl`.
 
 ---
 
@@ -294,7 +306,14 @@ erDiagram
 
 ---
 
-## 9. Estructura del repositorio (a materializar en entregas 2-4)
+## 9. Estructura del repositorio
+
+> Lo que sigue era el plan inicial. La estructura final está en el README. Tres
+> piezas de este esquema **no se implementaron**: `src/features/` y `src/viz/`
+> (su lógica vive en `gold.py` y en `app/theme.py`), y `watch.py` (la detección
+> de cambios es explícita vía `invoke ingest`, no un *watcher* en segundo
+> plano). `_processed/` tampoco existe: los ficheros se quedan en el landing y
+> el manifest de hashes decide qué reprocesar.
 
 ```
 proyecto/

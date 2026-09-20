@@ -1,0 +1,12 @@
+# El dataset crudo (~55 MB, ~17 MB comprimido) se versiona con Git LFS para que
+# el pipeline sea reproducible desde un clone limpio y CI pueda ejecutarlo.
+data/landing/Transactions/*.csv filter=lfs diff=lfs merge=lfs -text
+data/landing/Products/*.csv     filter=lfs diff=lfs merge=lfs -text
+docs/demo_assets/*.csv          filter=lfs diff=lfs merge=lfs -text
+
+# Normalización de fin de línea para el resto del repo
+*.py   text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+Makefile text eol=lf
