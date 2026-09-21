@@ -3,7 +3,7 @@ name = "retail-transactions-lakehouse"
 version = "1.0.0"
 description = "Lakehouse medallion sobre transacciones de supermercado: ETL con PySpark, segmentación y recomendación con Spark MLlib, y dashboard servido desde DuckDB."
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
     { name = "Santiago Espinosa" },

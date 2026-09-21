@@ -56,6 +56,13 @@ SERVING_RELEASE_TAG = "serving-latest"
 PIPELINE_ENABLED = "0"
 ```
 
+**Versión de Python.** Streamlit Cloud usa Python 3.14 por defecto. Todas las
+dependencias de `requirements.txt` están fijadas a versiones con wheel para 3.11
+y 3.14; si alguna no lo tuviera, pip intentaría compilarla, no hay `cmake` en el
+entorno y el despliegue fallaría con *Error installing requirements*. El job
+`serving-deps` de CI instala el serving en ambas versiones con
+`--only-binary=:all:` para detectarlo antes de desplegar.
+
 Al arrancar, `app/data.py` descarga el artefacto del release y lo cachea en
 `/tmp` con `@st.cache_resource`. No escribe nada más: el sistema de ficheros del
 entorno es efímero.
