@@ -2,9 +2,11 @@
 
 [![ci](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/ci.yml)
 [![pipeline](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/pipeline.yml/badge.svg)](https://github.com/criskian/retail-transactions-lakehouse/actions/workflows/pipeline.yml)
-[![python](https://img.shields.io/badge/python-3.11-blue)](pyproject.toml)
+[![python](https://img.shields.io/badge/python-3.11%20%7C%203.14-blue)](pyproject.toml)
 [![pyspark](https://img.shields.io/badge/pyspark-3.5.5-e25a1c)](requirements-pipeline.txt)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+[English](README.en.md) · **Español**
 
 Lakehouse medallion sobre **1,1 millones de canastas** reales de supermercado:
 ETL distribuido con PySpark, segmentación y recomendación con Spark MLlib, y un
@@ -135,7 +137,7 @@ invoke install                    # crea .venv e instala dependencias
 invoke winutils                   # sólo Windows
 invoke doctor                     # verifica Java, Hadoop y los workers de Python
 
-invoke pipeline                   # bronze -> silver -> gold -> models  (~8 min)
+invoke pipeline                   # bronze -> silver -> gold -> models  (~7 min)
 invoke export                     # construye data/serving/serving.duckdb
 invoke app                        # http://localhost:8501
 ```
