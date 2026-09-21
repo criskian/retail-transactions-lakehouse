@@ -24,6 +24,28 @@ jobs:
       - run: ruff check --output-format=github .
       - run: ruff format --check .
 
+  serving-deps:
+    # Instala la capa de serving tal como lo hará la plataforma de despliegue.
+    # Streamlit Community Cloud usa Python 3.14 por defecto: si alguna
+    # dependencia no publica wheel para esa versión, pip intenta compilarla,
+    # no hay cmake y el despliegue falla. `--only-binary` lo detecta aquí.
+    name: serving (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: 'pip install --only-binary=:all: -r requirements.txt'
+      - name: La app importa sin PySpark
+        run: |
+          python -c "import importlib.util, sys; sys.exit(importlib.util.find_spec('pyspark') is not None)"
+          python -c "import app.data, app.theme, app.filters, app.views.resumen, app.views.segmentacion"
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

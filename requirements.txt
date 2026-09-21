@@ -4,12 +4,17 @@
 # Añadir pyspark aquí (317 MB + JVM) rompe el despliegue.
 #   pipeline -> requirements-pipeline.txt
 #   dev      -> requirements-dev.txt
+#
+# Todas las versiones deben tener wheels para Python 3.11 (local y CI) y 3.14
+# (versión por defecto de Streamlit Community Cloud). Sin wheel, pip intenta
+# compilar desde fuente, no hay cmake y el despliegue falla. El job
+# `serving-deps` de CI lo comprueba en cada push.
 # ---------------------------------------------------------------------------
 streamlit==1.64.0
-duckdb==1.2.2
-pandas==2.2.3
-numpy==2.2.6
-pyarrow==19.0.1
+duckdb==1.4.3
+pandas==2.3.3
+numpy==2.3.5
+pyarrow==22.0.0
 plotly==7.1.0
 
 # Componentes de UI (ver docs/ADR/0005-stack-de-ui.md)
